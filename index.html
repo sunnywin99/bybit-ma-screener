@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Bybit USDT 永續合約 MA 多頭排列篩選器</title>
+<style>
+  :root {
+    --bg: #0b0e14;
+    --panel: #131824;
+    --border: #232a3a;
+    --text: #e6e9ef;
+    --muted: #8b93a7;
+    --accent: #3ecf8e;
+    --danger: #ef5b5b;
+    --header-bg: #171d2b;
+    --row-hover: #1b2231;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f7f8fa;
+      --panel: #ffffff;
+      --border: #e3e6ec;
+      --text: #1a1d24;
+      --muted: #6b7280;
+      --accent: #0f9d63;
+      --danger: #d3382f;
+      --header-bg: #f0f2f6;
+      --row-hover: #f5f7fb;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Microsoft JhengHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 24px 16px 60px;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; }
+  h1 { font-size: 1.4rem; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 0.9rem; margin-bottom: 20px; line-height: 1.6; }
+  .controls {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    margin-bottom: 16px;
+  }
+  button {
+    background: var(--accent); color: #05130c; border: none;
+    padding: 10px 18px; border-radius: 8px; font-size: 0.95rem; font-weight: 600;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .status { color: var(--muted); font-size: 0.88rem; }
+  .progress-bar {
+    width: 100%; height: 6px; background: var(--border); border-radius: 4px;
+    overflow: hidden; margin: 8px 0 16px; display: none;
+  }
+  .progress-bar.active { display: block; }
+  .progress-fill { height: 100%; background: var(--accent); width: 0%; transition: width 0.15s; }
+  table {
+    width: 100%; border-collapse: collapse; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
+    font-variant-numeric: tabular-nums;
+  }
+  thead th {
+    background: var(--header-bg); text-align: right; padding: 10px 14px;
+    font-size: 0.82rem; color: var(--muted); font-weight: 600;
+    border-bottom: 1px solid var(--border); cursor: pointer; user-select: none;
+    white-space: nowrap;
+  }
+  thead th:first-child, thead th:nth-child(2) { text-align: left; }
+  tbody td {
+    padding: 10px 14px; text-align: right; border-bottom: 1px solid var(--border);
+    font-size: 0.9rem; white-space: nowrap;
+  }
+  tbody td:first-child, tbody td:nth-child(2) { text-align: left; }
+  tbody tr:hover { background: var(--row-hover); }
+  tbody tr:last-child td { border-bottom: none; }
+  .symbol { font-weight: 600; }
+  .rank { color: var(--muted); width: 40px; }
+  .pos { color: var(--accent); }
+  .empty, .error {
+    padding: 40px 20px; text-align: center; color: var(--muted);
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  }
+  .error { color: var(--danger); }
+  .section { margin-bottom: 28px; }
+  .section-title {
+    font-size: 1rem; font-weight: 700; margin: 0 0 4px;
+    display: flex; align-items: baseline; gap: 8px;
+  }
+  .section-count { font-weight: 500; color: var(--muted); font-size: 0.85rem; }
+  .section-desc { color: var(--muted); font-size: 0.82rem; margin: 0 0 10px; }
+  footer { margin-top: 20px; color: var(--muted); font-size: 0.78rem; text-align: center; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Bybit USDT 永續合約 MA 多頭排列篩選器</h1>
+  <div class="sub">
+    掃描 Bybit 所有 USDT 本位（linear）永續合約的日K線，篩選出均線多頭排列（MA50 &gt; MA150 &gt; MA200）的合約，
+    並依現價與 MA50 / MA150 的相對位置再分成三類。
+    資料在你按下「開始掃描」時，即時從 Bybit 公開 API 抓取，不會儲存在任何伺服器上。
+  </div>
+  <div class="controls">
+    <button id="scanBtn">開始掃描</button>
+    <button id="exportBtn" disabled>匯出 TXT</button>
+    <span class="status" id="status">尚未掃描</span>
+  </div>
+  <div class="progress-bar" id="progressBar"><div class="progress-fill" id="progressFill"></div></div>
+  <div id="resultArea"></div>
+  <footer>
+    資料來源：Bybit USDT 永續合約公開 API（api.bybit.com）。僅供研究參考，非投資建議。
+  </footer>
+</div>
+
+<script>
+const BASE = "https://api.bybit.com";
+const scanBtn = document.getElementById("scanBtn");
+const exportBtn = document.getElementById("exportBtn");
+const statusEl = document.getElementById("status");
+const progressBar = document.getElementById("progressBar");
+const progressFill = document.getElementById("progressFill");
+const resultArea = document.getElementById("resultArea");
+
+let lastResults = [];
+
+const SECTIONS = [
+  {
+    id: "above50",
+    title: "現價 > MA50",
+    desc: "現價已站上 MA50，趨勢最強勢的一組。",
+    match: r => r.price > r.ma50,
+  },
+  {
+    id: "between",
+    title: "現價介於 MA150 與 MA50 之間",
+    desc: "現價回落到 MA50 之下、但仍在 MA150 之上，尚未跌破多頭排列的中段支撐。",
+    match: r => r.price <= r.ma50 && r.price > r.ma150,
+  },
+  {
+    id: "other",
+    title: "其他",
+    desc: "現價已跌破 MA150（仍符合 MA50 &gt; MA150 &gt; MA200 排列，但價格轉弱）。",
+    match: r => r.price <= r.ma150,
+  },
+];
+
+// 每個分類各自獨立的排序狀態
+const sectionState = Object.fromEntries(
+  SECTIONS.map(s => [s.id, { sortKey: "symbol", sortDir: 1 }])
+);
+
+async function fetchJson(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("HTTP " + res.status + " for " + url);
+  const data = await res.json();
+  if (data.retCode !== 0) throw new Error("Bybit API 錯誤：" + data.retMsg);
+  return data;
+}
+
+async function getUsdtSymbols() {
+  const info = await fetchJson(BASE + "/v5/market/instruments-info?category=linear&limit=1000");
+  return info.result.list
+    .filter(s =>
+      s.quoteCoin === "USDT" &&
+      s.status === "Trading" &&
+      s.contractType === "LinearPerpetual"
+    )
+    .map(s => s.symbol);
+}
+
+function average(arr) {
+  return arr.reduce((a, b) => a + b, 0) / arr.length;
+}
+
+async function analyzeSymbol(symbol) {
+  const data = await fetchJson(
+    `${BASE}/v5/market/kline?category=linear&symbol=${symbol}&interval=D&limit=201`
+  );
+  // Bybit 回傳為新到舊（index 0 是今天，尚未收盤），先捨棄再反轉成舊到新，
+  // 對齊其餘計算邏輯（closes 陣列由舊到新，最後一筆是最新已收盤價）。
+  const closed = data.result.list.slice(1).reverse();
+  if (closed.length < 200) return null;
+
+  const closes = closed.map(k => parseFloat(k[4]));
+  const ma50 = average(closes.slice(-50));
+  const ma150 = average(closes.slice(-150));
+  const ma200 = average(closes.slice(-200));
+  const price = closes[closes.length - 1];
+
+  if (!(ma50 > ma150 && ma150 > ma200)) return null;
+
+  return {
+    symbol,
+    price,
+    ma50,
+    ma150,
+    ma200,
+    strength: (ma50 - ma200) / ma200, // MA50 領先 MA200 的幅度，作為排列強度指標
+  };
+}
+
+// 簡單併發池，避免同時發出過多請求
+async function runPool(items, worker, concurrency, onProgress) {
+  const results = [];
+  let idx = 0;
+  let done = 0;
+  async function next() {
+    while (idx < items.length) {
+      const i = idx++;
+      try {
+        const r = await worker(items[i]);
+        if (r) results.push(r);
+      } catch (e) {
+        // 單一幣種失敗就跳過，不中斷整體掃描
+      }
+      done++;
+      onProgress(done, items.length);
+    }
+  }
+  const workers = Array.from({ length: concurrency }, next);
+  await Promise.all(workers);
+  return results;
+}
+
+function formatPrice(v) {
+  if (v >= 100) return v.toFixed(2);
+  if (v >= 1) return v.toFixed(4);
+  return v.toPrecision(4);
+}
+
+function sortRows(rows, state) {
+  return [...rows].sort((a, b) => {
+    const av = a[state.sortKey], bv = b[state.sortKey];
+    if (typeof av === "string") {
+      // 用字元碼比較而非 localeCompare，避免瀏覽器地區排序規則造成非預期順序
+      return (av < bv ? -1 : av > bv ? 1 : 0) * state.sortDir;
+    }
+    return (av - bv) * state.sortDir;
+  });
+}
+
+function renderSectionTable(section, rows) {
+  const state = sectionState[section.id];
+  const sorted = sortRows(rows, state);
+  const bodyRows = sorted.map((r, i) => `
+    <tr>
+      <td class="rank">${i + 1}</td>
+      <td class="symbol">${r.symbol}.P</td>
+      <td>${formatPrice(r.price)}</td>
+      <td>${formatPrice(r.ma50)}</td>
+      <td>${formatPrice(r.ma150)}</td>
+      <td>${formatPrice(r.ma200)}</td>
+      <td class="pos">+${(r.strength * 100).toFixed(2)}%</td>
+    </tr>
+  `).join("");
+
+  return `
+    <div class="section" data-section="${section.id}">
+      <div class="section-title">${section.title} <span class="section-count">(${rows.length} 檔)</span></div>
+      <div class="section-desc">${section.desc}</div>
+      ${rows.length === 0
+        ? `<div class="empty">這一類目前沒有符合的幣種。</div>`
+        : `<table>
+            <thead>
+              <tr>
+                <th class="rank">#</th>
+                <th data-key="symbol">幣種</th>
+                <th data-key="price">現價</th>
+                <th data-key="ma50">MA50</th>
+                <th data-key="ma150">MA150</th>
+                <th data-key="ma200">MA200</th>
+                <th data-key="strength">MA50 領先 MA200</th>
+              </tr>
+            </thead>
+            <tbody>${bodyRows}</tbody>
+          </table>`
+      }
+    </div>
+  `;
+}
+
+function renderTable() {
+  if (lastResults.length === 0) {
+    resultArea.innerHTML = `<div class="empty">目前沒有符合 MA50 &gt; MA150 &gt; MA200 多頭排列的 USDT 永續合約。</div>`;
+    return;
+  }
+
+  resultArea.innerHTML = SECTIONS
+    .map(section => renderSectionTable(section, lastResults.filter(section.match)))
+    .join("");
+
+  resultArea.querySelectorAll(".section").forEach(sectionEl => {
+    const sectionId = sectionEl.dataset.section;
+    const state = sectionState[sectionId];
+    sectionEl.querySelectorAll("th[data-key]").forEach(th => {
+      th.addEventListener("click", () => {
+        const key = th.dataset.key;
+        if (state.sortKey === key) state.sortDir *= -1;
+        else { state.sortKey = key; state.sortDir = -1; }
+        renderTable();
+      });
+    });
+  });
+}
+
+function buildExportText() {
+  // 匯出不分三類，合併成單一清單依代號排序，方便整批貼進 TradingView 觀察清單
+  const rows = sortRows(lastResults, { sortKey: "symbol", sortDir: 1 });
+  return rows.map(r => r.symbol + ".P").join("\n");
+}
+
+function downloadTxt() {
+  const text = buildExportText();
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const ts = new Date();
+  const pad = n => String(n).padStart(2, "0");
+  const stamp = `${ts.getFullYear()}${pad(ts.getMonth() + 1)}${pad(ts.getDate())}-${pad(ts.getHours())}${pad(ts.getMinutes())}`;
+  a.href = url;
+  a.download = `bybit-usdt-ma-screener-${stamp}.txt`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function runScan() {
+  scanBtn.disabled = true;
+  exportBtn.disabled = true;
+  progressBar.classList.add("active");
+  progressFill.style.width = "0%";
+  resultArea.innerHTML = "";
+  statusEl.textContent = "正在取得所有 USDT 永續合約清單...";
+
+  try {
+    const symbols = await getUsdtSymbols();
+    statusEl.textContent = `共 ${symbols.length} 個 USDT 永續合約，開始抓取日K並計算均線...`;
+
+    lastResults = await runPool(symbols, analyzeSymbol, 8, (done, total) => {
+      const pct = Math.round((done / total) * 100);
+      progressFill.style.width = pct + "%";
+      statusEl.textContent = `掃描中... ${done}/${total}`;
+    });
+
+    statusEl.textContent = `掃描完成：共 ${symbols.length} 檔，符合多頭排列 ${lastResults.length} 檔`;
+    renderTable();
+    exportBtn.disabled = lastResults.length === 0;
+  } catch (e) {
+    resultArea.innerHTML = `<div class="error">掃描失敗：${e.message}</div>`;
+    statusEl.textContent = "發生錯誤";
+  } finally {
+    progressBar.classList.remove("active");
+    scanBtn.disabled = false;
+  }
+}
+
+scanBtn.addEventListener("click", runScan);
+exportBtn.addEventListener("click", downloadTxt);
+</script>
+</body>
+</html>
